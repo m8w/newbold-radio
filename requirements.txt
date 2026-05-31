@@ -1,0 +1,9 @@
+# Newbold Radio — Python dependencies
+#
+# System dependencies (install via Homebrew, NOT pip):
+#   brew install ffmpeg yt-dlp
+#
+# Python dependencies:
+
+requests>=2.28.0        # Archive.org API calls, Alonetone/Bandcamp HTTP requests
+openpyxl>=3.1.0         # Optional: read .xlsx manifest if CSV not yet generated

@@ -8,6 +8,8 @@ Built for and by [William Victor Newbold](https://xik6.bandcamp.com/) as part of
 
 ## What It Does
 
+- **Live control panel** — browser-based mute / change-song / volume controls for every lane (see below)
+- **OBS "Now Playing" overlay** — a transparent browser-source page listing each lane's song, source, and where it lives on the internet
 - **Multi-lane playback** — 3–6 simultaneous streams via `ffplay`, each on its own thread
 - **Four audio sources** — weighted random selection across your full catalog:
   - YouTube (weight 87) — 86,000+ videos via local CSV manifest
@@ -89,10 +91,12 @@ Export your YouTube cookies from Safari using the [Cookie-Editor](https://cookie
 ### 4. Run
 
 ```bash
-python3 radiot.py
+python3 radio-newbold.py
 ```
 
-Playback starts immediately across all lanes. Press `Ctrl+C` to stop cleanly (logs are finalized on exit).
+Playback starts immediately across all lanes, and the control panel + OBS
+overlay server come up at `http://localhost:8080/`. Press `Ctrl+C` to stop
+cleanly (logs are finalized on exit).
 
 ---
 
@@ -105,6 +109,56 @@ Columns: `Title`, `YouTube_URL`
 > This snapshot is from February 2026. It will be periodically updated as new videos are uploaded.
 
 ---
+
+## Live Control Panel
+
+When the radio starts it also launches a tiny local web server (no extra
+dependencies — Python stdlib only). Open the control panel in any browser on
+the same machine:
+
+```
+http://localhost:8080/
+```
+
+From the panel you can, per lane:
+
+- **Change Song ⏭** — skip the current track and jump to a new random one
+- **Mute / Unmute** — silence just that lane (it resumes with a fresh track when unmuted)
+- **Volume** — set the lane level (applies to the next track that starts)
+
+…plus global controls in the top bar:
+
+- **Mute All** — instantly silence every lane (handy to drop the soundtrack on cue)
+- **Skip All ⏭** — reroll every lane at once
+
+The status auto-refreshes every couple of seconds, so the panel always reflects
+what's actually playing.
+
+> The port is configurable via `CONFIG['control_port']` near the top of
+> `radio-newbold.py` (default `8080`). The server binds to `0.0.0.0`, so you can
+> also reach it from another device on your LAN at `http://<this-mac-ip>:8080/`.
+
+## OBS "Now Playing" Overlay
+
+Add a live on-screen tracklist to your broadcast — it lists each lane's song
+title, its source (YouTube / Archive / Bandcamp / Alonetone), and the URL where
+the track lives on the internet.
+
+In OBS:
+
+1. **Sources → + → Browser**
+2. Set the URL to:
+
+   ```
+   http://localhost:8080/obs
+   ```
+
+3. Set the width/height to taste (e.g. 760 × 400) and check **"Shutdown source
+   when not visible"** if you like.
+
+The overlay has a transparent background, so it composites cleanly over your
+video. Muted lanes are automatically hidden from the overlay. It refreshes
+every few seconds on its own — no need to reload the source.
 
 ## Session Logs & Video Descriptions
 

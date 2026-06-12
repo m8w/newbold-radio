@@ -39,9 +39,27 @@ from urllib.parse import urlparse, parse_qs
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Folder this script lives in. Files placed right next to radiot.py
+# (youtube_videos.csv, youtube_cookies.txt) are found automatically —
+# no matter where you clone the repo. This is what makes it "just work."
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def first_existing(paths: List[Path]) -> Optional[Path]:
+    """Return the first path in the list that exists, or None."""
+    for p in paths:
+        try:
+            if Path(p).exists():
+                return Path(p)
+        except Exception:
+            continue
+    return None
+
+
 CONFIG = {
     'lanes': 4,
-    'log_dir': Path.home() / 'ExternalRadio' / 'logs',
+    # Logs live next to the script by default (folder is gitignored).
+    'log_dir': SCRIPT_DIR / 'logs',
     'log_rotate_hours': 12,
 
     # Local control panel + OBS overlay web server
@@ -54,14 +72,24 @@ CONFIG = {
             'enabled': True,
             'weight': 87,
             # --- Try these paths in order; first one that exists wins ---
+            # Script-folder paths come FIRST so dropping the CSV next to
+            # radiot.py is all you need — the rest are legacy fallbacks.
             'csv_paths': [
+                SCRIPT_DIR / 'youtube_videos.csv',
+                SCRIPT_DIR / 'youtube_videos (1).csv',
+                SCRIPT_DIR.parent / 'youtube_videos.csv',
                 Path.home() / 'music' / 'youtube_videos.csv',
                 Path.home() / 'ExternalRadio' / 'youtube_videos.csv',
                 Path.home() / 'ExternalRadio' / 'youtube_videos_gdrive.csv',
                 Path.home() / 'music' / 'Newbold_Archive_Manifest_2026-02-13.csv',
                 Path.home() / 'Documents' / 'youtube_videos.csv',
             ],
-            'cookies_file': Path.home() / 'ExternalRadio' / 'youtube_cookies.txt',
+            # Cookies: next to the script first, then legacy locations.
+            'cookies_files': [
+                SCRIPT_DIR / 'youtube_cookies.txt',
+                SCRIPT_DIR.parent / 'youtube_cookies.txt',
+                Path.home() / 'ExternalRadio' / 'youtube_cookies.txt',
+            ],
         },
         'archive': {
             'enabled': True,
@@ -301,9 +329,9 @@ class YouTubeFetcher:
         return ('youtube', title, url)
 
     def get_stream_url(self, url: str) -> Optional[str]:
-        cookies = self.cfg.get('cookies_file')
+        cookies = first_existing(self.cfg.get('cookies_files', []))
         opts = list(CONFIG['ytdlp_opts'])
-        if cookies and Path(cookies).exists():
+        if cookies:
             opts += ['--cookies', str(cookies)]
         cmd = ['yt-dlp', '-f', 'bestaudio/best', '--get-url'] + opts + [url]
         try:

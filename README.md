@@ -80,11 +80,13 @@ pip install -r requirements.txt
 
 ### 3. YouTube cookies (required for YouTube playback)
 
-Export your YouTube cookies from Safari using the [Cookie-Editor](https://cookie-editor.com/) extension and save them to:
+Export your YouTube cookies from Safari using the [Cookie-Editor](https://cookie-editor.com/) extension and save them **right next to `radiot.py`**:
 
 ```
-~/newbold-radio/youtube_cookies.txt
+<repo folder>/youtube_cookies.txt
 ```
+
+The script auto-detects it there — no config editing. (It also still checks `~/ExternalRadio/youtube_cookies.txt` as a fallback for older setups.)
 
 > ⚠️ **Never commit `youtube_cookies.txt` to git.** It is listed in `.gitignore`.
 
@@ -102,7 +104,7 @@ cleanly (logs are finalized on exit).
 
 ## YouTube Video Manifest
 
-`youtube_videos.csv` contains the full index of 86,742 YouTube videos across six channels. All videos are publicly available. The CSV must live in the **same folder as `radiot.py`** — the script loads it on startup for random selection.
+`youtube_videos.csv` contains the full index of 86,742 YouTube videos across six channels. All videos are publicly available. Just drop the CSV in the **same folder as `radiot.py`** and it's loaded automatically on startup — no config editing. (Legacy locations like `~/music/` and `~/ExternalRadio/` are still checked as fallbacks.)
 
 Columns: `Title`, `YouTube_URL`
 

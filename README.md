@@ -91,7 +91,7 @@ Export your YouTube cookies from Safari using the [Cookie-Editor](https://cookie
 ### 4. Run
 
 ```bash
-python3 radio-newbold.py
+python3 radiot.py
 ```
 
 Playback starts immediately across all lanes, and the control panel + OBS
@@ -102,7 +102,7 @@ cleanly (logs are finalized on exit).
 
 ## YouTube Video Manifest
 
-`youtube_videos.csv` contains the full index of 86,742 YouTube videos across six channels. All videos are publicly available. The CSV must live in the **same folder as `newbold-radio.py`** — the script loads it on startup for random selection.
+`youtube_videos.csv` contains the full index of 86,742 YouTube videos across six channels. All videos are publicly available. The CSV must live in the **same folder as `radiot.py`** — the script loads it on startup for random selection.
 
 Columns: `Title`, `YouTube_URL`
 
@@ -135,7 +135,7 @@ The status auto-refreshes every couple of seconds, so the panel always reflects
 what's actually playing.
 
 > The port is configurable via `CONFIG['control_port']` near the top of
-> `radio-newbold.py` (default `8080`). The server binds to `0.0.0.0`, so you can
+> `radiot.py` (default `8080`). The server binds to `0.0.0.0`, so you can
 > also reach it from another device on your LAN at `http://<this-mac-ip>:8080/`.
 
 ## OBS "Now Playing" Overlay
@@ -194,7 +194,7 @@ Key parameters at the top of `radiot.py`:
 ## Files
 
 ```
-newbold-radio.py                   # Main script
+radiot.py                   # Main script
 patch_radiot.py                    # In-place patcher (applies fixes to existing installs)
 external_radio_setup.py            # Dependency validator and source tester
 youtube_videos.csv                 # YouTube video index (86,742 videos, Feb 2026)

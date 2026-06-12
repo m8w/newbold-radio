@@ -441,6 +441,13 @@ class AlonetroneFetcher:
 
 
 class BandcampFetcher:
+    """
+    Two-level crawl so every entry has a real song + album name + account:
+      1. Crawl each artist page  → list of album URLs
+      2. Crawl each album        → individual /track/ URLs with titles
+    Each catalog entry's title reads "Song — Album (account)" and its URL
+    is the track's own Bandcamp page — i.e. the link to buy that track.
+    """
     name = 'bandcamp'
 
     def __init__(self, cfg: dict):
@@ -448,20 +455,79 @@ class BandcampFetcher:
         self._catalog: List[Tuple[str, str]] = []
         self._loaded = False
 
+    @staticmethod
+    def _account(url: str) -> str:
+        """xik6.bandcamp.com → 'xik6'."""
+        try:
+            host = url.split('//', 1)[-1].split('/', 1)[0]
+            return host.split('.')[0] or 'bandcamp'
+        except Exception:
+            return 'bandcamp'
+
+    def _flat(self, url: str, timeout: int) -> List[str]:
+        """Run yt-dlp --flat-playlist; return 'webpage_url\\ttitle' lines."""
+        cmd = ['yt-dlp', '--flat-playlist',
+               '--print', '%(webpage_url)s\t%(title)s',
+               '--quiet', '--no-warnings', '--no-abort-on-error', url]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return r.stdout.strip().splitlines()
+        except Exception:
+            return []
+
+    @staticmethod
+    def _name_from_url(url: str) -> str:
+        """Last URL segment → 'Pretty Title'."""
+        slug = url.rstrip('/').split('/')[-1]
+        return slug.replace('-', ' ').replace('_', ' ').strip().title() or 'Untitled'
+
     def load(self):
-        for bc_url in self.cfg['urls']:
-            try:
-                cmd = ['yt-dlp', '--flat-playlist', '--print', '%(title)s\t%(url)s',
-                       '--quiet', '--no-warnings', bc_url]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split('\t', 1)
-                    if len(parts) == 2:
-                        title, track_url = parts
-                        if track_url.startswith('http'):
-                            self._catalog.append((title.strip(), track_url.strip()))
-            except Exception as e:
-                print(f'  ✗  Bandcamp {bc_url} failed: {e}')
+        for artist_url in self.cfg['urls']:
+            account = self._account(artist_url)
+
+            # Step 1 — discover album URLs (and any standalone track URLs).
+            album_urls = set()
+            direct_tracks = []   # (title, url) tracks found at the artist level
+            for line in self._flat(artist_url, 120):
+                parts = line.split('\t')
+                url = parts[0].strip() if parts and parts[0] else ''
+                title = parts[1].strip() if len(parts) > 1 else ''
+                if not url.startswith('http'):
+                    continue
+                if '/album/' in url:
+                    album_urls.add(url.split('?')[0])
+                elif '/track/' in url:
+                    direct_tracks.append((title, url.split('?')[0]))
+
+            # Step 2 — crawl each album for its individual tracks.
+            for album_url in sorted(album_urls):
+                album_name = self._name_from_url(album_url)
+                for line in self._flat(album_url, 60):
+                    parts = line.split('\t')
+                    url = parts[0].strip() if parts and parts[0] else ''
+                    title = parts[1].strip() if len(parts) > 1 else ''
+                    if not url.startswith('http') or '/track/' not in url:
+                        continue
+                    if not title or title in ('NA', 'None'):
+                        title = self._name_from_url(url)
+                    display = f'{title} — {album_name} ({account})'
+                    self._catalog.append((display, url.split('?')[0]))
+
+            # Fold in any standalone tracks not attached to an album.
+            for title, url in direct_tracks:
+                if not title or title in ('NA', 'None'):
+                    title = self._name_from_url(url)
+                display = f'{title} ({account})'
+                self._catalog.append((display, url))
+
+        # Deduplicate by URL.
+        seen, deduped = set(), []
+        for t, u in self._catalog:
+            if u not in seen:
+                seen.add(u)
+                deduped.append((t, u))
+        self._catalog = deduped
+
         print(f'  ✓  Bandcamp: {len(self._catalog):,} tracks indexed')
         self._loaded = True
 
@@ -651,7 +717,7 @@ class AudioLane:
 
     @property
     def status(self) -> str:
-        tag = 'MUTE' if self._silenced() else self._current_source.upper()[:4]
+        tag = 'MUTED' if self._silenced() else self._current_source.upper()
         return f'[{tag}] {self._current_title}'
 
     def info(self) -> dict:

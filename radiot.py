@@ -62,6 +62,11 @@ CONFIG = {
     'log_dir': SCRIPT_DIR / 'logs',
     'log_rotate_hours': 12,
 
+    # Pin specific lanes to a single source (0-based lane index → source name).
+    # Lane 1 is locked to YouTube so YouTube is ALWAYS in the mix; the rest
+    # stay weighted-random. Add more, e.g. {0: 'youtube', 1: 'bandcamp'}.
+    'pinned_lanes': {0: 'youtube'},
+
     # Local control panel + OBS overlay web server
     #   Control panel : http://localhost:<port>/
     #   OBS overlay   : http://localhost:<port>/obs   (add as a Browser Source)
@@ -600,6 +605,15 @@ class SourceRouter:
         chosen = random.choices(fetchers, weights=weights, k=1)[0]
         return chosen.fetch_random()
 
+    def pick_from(self, source: str) -> Optional[Tuple[str, str, str]]:
+        """Pick a track from one specific source (for pinned lanes).
+        Returns None if that source isn't ready yet — the lane waits rather
+        than falling back, so a pinned lane stays true to its source."""
+        for f in self._fetchers:
+            if f.name == source and f._loaded and f._catalog:
+                return f.fetch_random()
+        return None
+
     def ytdlp_stream_cmd(self, source: str, url: str) -> List[str]:
         """
         Build a yt-dlp command that downloads the audio and writes it to
@@ -639,11 +653,12 @@ class AudioLane:
     """
 
     def __init__(self, lane_id: int, router: SourceRouter, log: SessionLog,
-                 control: 'RadioControl'):
+                 control: 'RadioControl', pin: Optional[str] = None):
         self.lane_id = lane_id
         self.router = router
         self.log = log
         self.control = control          # shared state (global mute, etc.)
+        self.pin = pin                  # if set, this lane only plays this source
         self._proc: Optional[subprocess.Popen] = None      # ffplay
         self._ytdlp: Optional[subprocess.Popen] = None     # yt-dlp feeding the pipe
         self._current_title = '—'
@@ -697,9 +712,12 @@ class AudioLane:
                 time.sleep(0.3)
                 continue
 
-            track = self.router.pick_random()
+            if self.pin:
+                track = self.router.pick_from(self.pin)
+            else:
+                track = self.router.pick_random()
             if not track:
-                time.sleep(5)
+                time.sleep(5)        # source not ready yet — wait, don't fall back
                 continue
 
             source, title, url = track
@@ -781,6 +799,7 @@ class AudioLane:
             'muted': self._silenced(),
             'lane_muted': self.muted,
             'volume': self.volume,
+            'pin': self.pin or '',
             'playing': self._proc is not None and self._proc.poll() is None,
             'elapsed': elapsed,
         }
@@ -947,7 +966,10 @@ function refresh(){
       el.className = 'lane' + (muted ? ' muted':'');
       el.innerHTML =
         '<div class="lanehead">'
-        +  '<strong>Lane '+L.lane+'</strong>'
+        +  '<strong>Lane '+L.lane
+        +     (L.pin ? ' <span style="color:#8a8f9c;font-weight:400">📌 '
+                       +L.pin.toUpperCase()+'</span>' : '')
+        +  '</strong>'
         +  '<span class="badge '+src+'">'+(L.source||'—').toUpperCase()+'</span>'
         +'</div>'
         +'<div class="title">'+(L.title||'—')+'</div>'
@@ -1168,8 +1190,13 @@ def main():
 
     print()
     n = CONFIG['lanes']
+    pinned = CONFIG.get('pinned_lanes', {})
     print(f'Starting {n} lanes...')
-    lanes = [AudioLane(i, router, log, control) for i in range(n)]
+    for i in sorted(pinned):
+        if i < n:
+            print(f'  📌  Lane {i + 1} pinned to {pinned[i].upper()}')
+    lanes = [AudioLane(i, router, log, control, pin=pinned.get(i))
+             for i in range(n)]
     control.lanes = lanes
 
     # ── Control panel + OBS overlay web server ──────────────────────────────

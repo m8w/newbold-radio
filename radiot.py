@@ -376,8 +376,8 @@ class ArchiveFetcher:
             self.load()
         if not self._catalog:
             return None
-        # Pick a random item and get a random audio file from it
-        title, base_url = random.choice(self._catalog)
+        # Pick a random item (the "album") and a random audio file (the "song").
+        item_title, base_url = random.choice(self._catalog)
         identifier = base_url.split('/download/')[-1]
         try:
             resp = requests.get(f'https://archive.org/metadata/{identifier}', timeout=15)
@@ -387,8 +387,17 @@ class ArchiveFetcher:
             if files:
                 chosen = random.choice(files)
                 url = f'https://archive.org/download/{identifier}/{chosen["name"]}'
-                fname = chosen.get('title') or chosen['name']
-                return ('archive', f'{title} / {fname}', url)
+                # Song name: prefer the file's own title, else prettify its filename.
+                song = chosen.get('title')
+                if not song:
+                    song = chosen['name'].rsplit('.', 1)[0]
+                    song = song.replace('_', ' ').replace('-', ' ').strip().title()
+                # "Song — Album (archive.org)" so the source/account is obvious.
+                if item_title and item_title.lower() not in song.lower():
+                    display = f'{song} — {item_title} (archive.org)'
+                else:
+                    display = f'{song} (archive.org)'
+                return ('archive', display, url)
         except Exception:
             pass
         return None
@@ -591,11 +600,27 @@ class SourceRouter:
         chosen = random.choices(fetchers, weights=weights, k=1)[0]
         return chosen.fetch_random()
 
-    def get_stream_url(self, source: str, url: str) -> Optional[str]:
-        """Resolve playback URL for sources that need it (YouTube, Bandcamp)."""
-        if source in ('youtube', 'bandcamp'):
-            return self._yt.get_stream_url(url)  # yt-dlp works for both
-        return url  # archive, alonetone: direct URL
+    def ytdlp_stream_cmd(self, source: str, url: str) -> List[str]:
+        """
+        Build a yt-dlp command that downloads the audio and writes it to
+        stdout ('-o -') so it can be piped straight into ffplay. This is far
+        more reliable than '--get-url' for YouTube, whose resolved URLs are
+        segmented / throttled / bot-gated and often won't play on their own.
+        """
+        cmd = ['yt-dlp', '-f', 'bestaudio/best', '-o', '-',
+               '--quiet', '--no-warnings', '--no-playlist']
+        if source == 'youtube':
+            cfg = self._yt.cfg
+            cookies = first_existing(cfg.get('cookies_files', []))
+            if cookies:
+                cmd += ['--cookies', str(cookies)]
+            else:
+                # No cookies.txt found — read live cookies from Safari instead.
+                cmd += ['--cookies-from-browser', 'safari']
+            # TV client dodges YouTube's aggressive web-client bot detection.
+            cmd += ['--extractor-args', 'youtube:player_client=tv,web']
+        cmd.append(url)
+        return cmd
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -619,7 +644,8 @@ class AudioLane:
         self.router = router
         self.log = log
         self.control = control          # shared state (global mute, etc.)
-        self._proc: Optional[subprocess.Popen] = None
+        self._proc: Optional[subprocess.Popen] = None      # ffplay
+        self._ytdlp: Optional[subprocess.Popen] = None     # yt-dlp feeding the pipe
         self._current_title = '—'
         self._current_source = '—'
         self._current_url = ''
@@ -636,12 +662,14 @@ class AudioLane:
         return self.muted or self.control.global_muted
 
     def _kill_proc(self):
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
-        self._proc = None
+        for attr in ('_proc', '_ytdlp'):
+            p = getattr(self, attr, None)
+            if p and p.poll() is None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
 
     def skip(self):
         """Jump to the next track immediately."""
@@ -676,40 +704,59 @@ class AudioLane:
 
             source, title, url = track
 
-            stream_url = self.router.get_stream_url(source, url)
-            if not stream_url:
-                continue
-
             self._current_source = source
             self._current_title = title[:80]
             self._current_url = url
             self._started_at = datetime.now()
             self.log.log(source, title, url)
 
-            af = f'volume={self.volume / 100:.2f}'
-            cmd = ['ffplay'] + CONFIG['ffplay_opts'] + ['-af', af, stream_url]
             self._skip.clear()
-            try:
-                self._proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                # Poll so mute / skip / shutdown can interrupt mid-track.
-                while self._running:
-                    if self._proc.poll() is not None:
-                        break               # track finished naturally
-                    if self._skip.is_set() or self._silenced():
-                        break               # user skipped or muted
-                    time.sleep(0.3)
-            except Exception:
-                pass
-            finally:
-                self._kill_proc()
+            self._play(source, url)
 
             # Brief gap between tracks (skip the wait if user is skipping).
             if not self._skip.is_set():
                 time.sleep(random.uniform(0.5, 2.0))
+
+    def _play(self, source: str, url: str):
+        """
+        Archive.org tracks are direct MP3 URLs — ffplay reads them straight.
+        Everything else (YouTube, Bandcamp, Alonetone) is piped:
+            yt-dlp  -o -  →  ffplay -i pipe:0
+        so yt-dlp handles all the auth / segments / cookies and ffplay just
+        plays the bytes it receives. This is what makes YouTube actually play.
+        """
+        af = f'volume={self.volume / 100:.2f}'
+        ffplay_base = ['ffplay'] + CONFIG['ffplay_opts'] + ['-af', af]
+        try:
+            if source == 'archive':
+                cmd = ffplay_base + [url]
+                self._proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                ytdlp_cmd = self.router.ytdlp_stream_cmd(source, url)
+                self._ytdlp = subprocess.Popen(
+                    ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                self._proc = subprocess.Popen(
+                    ffplay_base + ['-i', 'pipe:0'],
+                    stdin=self._ytdlp.stdout,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Let yt-dlp get SIGPIPE if ffplay exits first.
+                self._ytdlp.stdout.close()
+
+            # Poll so mute / skip / shutdown can interrupt mid-track.
+            while self._running:
+                if self._proc.poll() is not None:
+                    break                   # track finished (or failed) — move on
+                if self._skip.is_set() or self._silenced():
+                    break                   # user skipped or muted
+                time.sleep(0.3)
+        except FileNotFoundError as e:
+            print(f'  ✗  missing tool: {e}')
+            self._running = False
+        except Exception:
+            pass
+        finally:
+            self._kill_proc()
 
     def stop(self):
         self._running = False
@@ -1085,6 +1132,13 @@ def check_deps() -> bool:
         else:
             print(f'  ✗  {tool} not found — install with: brew install {tool}')
             ok = False
+
+    # deno is optional but recent yt-dlp may need it to solve YouTube's JS
+    # challenges — without it, YouTube tracks can silently fail to play.
+    if subprocess.run(['which', 'deno'], capture_output=True).returncode == 0:
+        print('  ✓  deno (YouTube JS solver)')
+    else:
+        print('  ⚠  deno not found — YouTube may fail. Install: brew install deno')
     return ok
 
 

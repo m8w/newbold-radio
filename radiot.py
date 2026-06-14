@@ -646,10 +646,12 @@ class AudioLane:
     One playback lane. Plays random tracks back-to-back via ffplay.
 
     Live controls (driven by the control panel / OBS overlay server):
-      • mute / unmute  — silences this lane immediately (stops playback;
-                          resumes with a fresh track when unmuted)
-      • skip           — jumps to the next random track right now
+      • pause / resume — TRUE pause: suspends the player process so the very
+                         same song continues from where it left off on resume
+                         (does NOT start a new track)
+      • skip           — jumps to the next track immediately
       • volume (0–100) — applied to the next track that starts
+      • pin            — lock this lane to one source (or 'random')
     """
 
     def __init__(self, lane_id: int, router: SourceRouter, log: SessionLog,
@@ -657,7 +659,7 @@ class AudioLane:
         self.lane_id = lane_id
         self.router = router
         self.log = log
-        self.control = control          # shared state (global mute, etc.)
+        self.control = control          # shared state (global pause, etc.)
         self.pin = pin                  # if set, this lane only plays this source
         self._proc: Optional[subprocess.Popen] = None      # ffplay
         self._ytdlp: Optional[subprocess.Popen] = None     # yt-dlp feeding the pipe
@@ -665,7 +667,8 @@ class AudioLane:
         self._current_source = '—'
         self._current_url = ''
         self._started_at: Optional[datetime] = None
-        self.muted = False
+        self._paused_accum = 0.0        # seconds spent paused (for elapsed display)
+        self.paused = False             # lane-level pause
         self.volume = 100               # 0–100, applied on next track
         self._skip = threading.Event()
         self._running = True
@@ -673,44 +676,58 @@ class AudioLane:
         self._thread.start()
 
     # ── control helpers ──────────────────────────────────────────────────────
-    def _silenced(self) -> bool:
-        return self.muted or self.control.global_muted
+    def _is_paused(self) -> bool:
+        """Effective pause = this lane paused OR everything paused globally."""
+        return self.paused or self.control.global_paused
+
+    def _signal_proc(self, sig):
+        """Send a signal to the live player process(es)."""
+        for p in (self._proc, self._ytdlp):
+            if p and p.poll() is None:
+                try:
+                    p.send_signal(sig)
+                except Exception:
+                    pass
 
     def _kill_proc(self):
         for attr in ('_proc', '_ytdlp'):
             p = getattr(self, attr, None)
             if p and p.poll() is None:
                 try:
+                    p.send_signal(signal.SIGCONT)   # wake if suspended, so it can die
                     p.terminate()
                 except Exception:
                     pass
             setattr(self, attr, None)
 
     def skip(self):
-        """Jump to the next track immediately."""
+        """Jump to the next track immediately (works even while paused)."""
         self._skip.set()
         self._kill_proc()
 
-    def set_muted(self, value: bool):
-        self.muted = bool(value)
-        if self.muted:
-            self._kill_proc()
+    def set_paused(self, value: bool):
+        self.paused = bool(value)
+        # Suspend/resume happens in the play loop, but apply right away too
+        # so a pause feels instant.
+        self._signal_proc(signal.SIGSTOP if self._is_paused() else signal.SIGCONT)
 
     def set_volume(self, value: int):
         self.volume = max(0, min(100, int(value)))
 
+    def set_pin(self, source: Optional[str]):
+        """Lock this lane to a source ('' / None / 'random' = unpinned)."""
+        source = (source or '').strip().lower()
+        self.pin = source if source and source != 'random' else None
+
     # ── playback loop ────────────────────────────────────────────────────────
     def _loop(self):
         while self._running:
-            # Hold here while muted (lane-level or global) — no audio out.
-            if self._silenced():
-                self._kill_proc()
-                self._current_source = '—'
-                self._current_title = '(muted)'
-                self._current_url = ''
-                self._started_at = None
-                time.sleep(0.3)
-                continue
+            # If paused before a track even starts, hold here (nothing to
+            # resume yet) — don't begin audio until the user un-pauses.
+            while self._running and self._is_paused() and self._proc is None:
+                time.sleep(0.2)
+            if not self._running:
+                break
 
             if self.pin:
                 track = self.router.pick_from(self.pin)
@@ -726,6 +743,7 @@ class AudioLane:
             self._current_title = title[:80]
             self._current_url = url
             self._started_at = datetime.now()
+            self._paused_accum = 0.0
             self.log.log(source, title, url)
 
             self._skip.clear()
@@ -742,9 +760,14 @@ class AudioLane:
             yt-dlp  -o -  →  ffplay -i pipe:0
         so yt-dlp handles all the auth / segments / cookies and ffplay just
         plays the bytes it receives. This is what makes YouTube actually play.
+
+        Pause is real: we SIGSTOP the player to freeze it in place and SIGCONT
+        to resume the same song — no new track, no lost position.
         """
         af = f'volume={self.volume / 100:.2f}'
         ffplay_base = ['ffplay'] + CONFIG['ffplay_opts'] + ['-af', af]
+        suspended = False
+        pause_started = 0.0
         try:
             if source == 'archive':
                 cmd = ffplay_base + [url]
@@ -761,13 +784,28 @@ class AudioLane:
                 # Let yt-dlp get SIGPIPE if ffplay exits first.
                 self._ytdlp.stdout.close()
 
-            # Poll so mute / skip / shutdown can interrupt mid-track.
+            # If we already started paused, freeze immediately.
+            if self._is_paused():
+                self._signal_proc(signal.SIGSTOP)
+                suspended = True
+                pause_started = time.time()
+
+            # Poll: reconcile pause state, and break on finish / skip / stop.
             while self._running:
                 if self._proc.poll() is not None:
                     break                   # track finished (or failed) — move on
-                if self._skip.is_set() or self._silenced():
-                    break                   # user skipped or muted
-                time.sleep(0.3)
+                if self._skip.is_set():
+                    break                   # user skipped
+                want_pause = self._is_paused()
+                if want_pause and not suspended:
+                    self._signal_proc(signal.SIGSTOP)
+                    suspended = True
+                    pause_started = time.time()
+                elif not want_pause and suspended:
+                    self._signal_proc(signal.SIGCONT)
+                    suspended = False
+                    self._paused_accum += time.time() - pause_started
+                time.sleep(0.2)
         except FileNotFoundError as e:
             print(f'  ✗  missing tool: {e}')
             self._running = False
@@ -782,22 +820,27 @@ class AudioLane:
 
     @property
     def status(self) -> str:
-        tag = 'MUTED' if self._silenced() else self._current_source.upper()
+        if self._is_paused() and self._proc is not None:
+            tag = 'PAUSED'
+        else:
+            tag = self._current_source.upper()
         return f'[{tag}] {self._current_title}'
 
     def info(self) -> dict:
         """Snapshot for the control panel / OBS overlay."""
+        paused = self._is_paused()
         elapsed = ''
-        if self._started_at and not self._silenced():
-            secs = int((datetime.now() - self._started_at).total_seconds())
-            elapsed = f'{secs // 60:02d}:{secs % 60:02d}'
+        if self._started_at and self._proc is not None:
+            secs = int((datetime.now() - self._started_at).total_seconds()
+                       - self._paused_accum)
+            elapsed = f'{max(0, secs) // 60:02d}:{max(0, secs) % 60:02d}'
         return {
             'lane': self.lane_id + 1,
             'source': self._current_source,
             'title': self._current_title,
             'url': self._current_url,
-            'muted': self._silenced(),
-            'lane_muted': self.muted,
+            'paused': paused,
+            'lane_paused': self.paused,
             'volume': self.volume,
             'pin': self.pin or '',
             'playing': self._proc is not None and self._proc.poll() is None,
@@ -814,7 +857,7 @@ class RadioControl:
 
     def __init__(self):
         self.lanes: List[AudioLane] = []
-        self.global_muted = False
+        self.global_paused = False
         self.log: Optional[SessionLog] = None
         self.started_at = datetime.now()
 
@@ -835,33 +878,43 @@ class RadioControl:
         for lane in self.lanes:
             lane.skip()
 
-    def set_mute(self, lane_num: int, value: bool):
+    def set_pause(self, lane_num: int, value: bool):
         lane = self._lane(lane_num)
         if lane:
-            lane.set_muted(value)
+            lane.set_paused(value)
 
-    def toggle_mute(self, lane_num: int):
+    def toggle_pause(self, lane_num: int):
         lane = self._lane(lane_num)
         if lane:
-            lane.set_muted(not lane.muted)
+            lane.set_paused(not lane.paused)
 
-    def set_global_mute(self, value: bool):
-        self.global_muted = bool(value)
+    def set_global_pause(self, value: bool):
+        self.global_paused = bool(value)
+        # Apply immediately to whatever is currently playing.
+        sig = signal.SIGSTOP if self.global_paused else signal.SIGCONT
+        for lane in self.lanes:
+            lane._signal_proc(sig)
 
-    def toggle_global_mute(self):
-        self.global_muted = not self.global_muted
+    def toggle_global_pause(self):
+        self.set_global_pause(not self.global_paused)
 
     def set_volume(self, lane_num: int, value: int):
         lane = self._lane(lane_num)
         if lane:
             lane.set_volume(value)
 
+    def set_pin(self, lane_num: int, source: Optional[str]):
+        lane = self._lane(lane_num)
+        if lane:
+            lane.set_pin(source)
+            lane.skip()      # apply the new source right away
+
     # ── status snapshot ──────────────────────────────────────────────────────
     def status(self) -> dict:
         secs = int((datetime.now() - self.started_at).total_seconds())
         uptime = f'{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}'
         return {
-            'global_muted': self.global_muted,
+            'global_paused': self.global_paused,
             'uptime': uptime,
             'tracks_logged': len(self.log._entries) if self.log else 0,
             'lanes': [lane.info() for lane in self.lanes],
@@ -893,7 +946,9 @@ CONTROL_PAGE = """<!DOCTYPE html>
          grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
   .lane { background:#16181f; border:1px solid #262a35; border-radius:12px;
           padding:16px; }
-  .lane.muted { opacity:.55; border-color:#5a2730; }
+  .lane.paused { opacity:.6; border-color:#6b5a27; }
+  select { background:#202533; color:#e8e8ec; border:1px solid #2f3442;
+           border-radius:8px; padding:7px 10px; font-size:13px; font-weight:600; }
   .lanehead { display:flex; align-items:center; justify-content:space-between;
               margin-bottom:8px; }
   .badge { font-size:11px; font-weight:700; letter-spacing:.5px; padding:3px 8px;
@@ -934,14 +989,16 @@ CONTROL_PAGE = """<!DOCTYPE html>
   </span>
 </header>
 <div class="bar">
-  <button class="danger" id="muteall" onclick="act('/api/global_mute_toggle')">Mute All</button>
+  <button class="danger" id="pauseall" onclick="act('/api/global_pause_toggle')">Pause All</button>
   <button onclick="act('/api/skip_all')">Skip All ⏭</button>
 </div>
 <main id="lanes"></main>
 
 <script>
+const SOURCES = ['random','youtube','archive','bandcamp','alonetone'];
 function act(path){ fetch(path,{method:'POST'}).then(refresh); }
 function setvol(lane,v){ fetch('/api/volume?lane='+lane+'&v='+v,{method:'POST'}); }
+function setpin(lane,src){ fetch('/api/pin?lane='+lane+'&source='+src,{method:'POST'}).then(refresh); }
 
 function refresh(){
   fetch('/api/status').then(r=>r.json()).then(s=>{
@@ -949,21 +1006,26 @@ function refresh(){
         location.origin + '/obs';
     document.getElementById('meta').textContent =
         'uptime ' + s.uptime + '  ·  ' + s.tracks_logged + ' tracks logged'
-        + (s.global_muted ? '  ·  ALL MUTED' : '');
-    const mb = document.getElementById('muteall');
-    mb.classList.toggle('on', s.global_muted);
-    mb.textContent = s.global_muted ? 'Unmute All' : 'Mute All';
+        + (s.global_paused ? '  ·  ⏸ ALL PAUSED' : '');
+    const pb = document.getElementById('pauseall');
+    pb.classList.toggle('on', s.global_paused);
+    pb.textContent = s.global_paused ? '▶ Resume All' : '⏸ Pause All';
 
     const root = document.getElementById('lanes');
     root.innerHTML = '';
     s.lanes.forEach(L=>{
       const src = (L.source||'—').toLowerCase();
-      const muted = L.muted;
+      const paused = L.paused;
       const urlHtml = L.url
         ? '<a href="'+L.url+'" target="_blank" rel="noopener">'+L.url+'</a>'
         : '—';
+      const pinVal = L.pin || 'random';
+      const opts = SOURCES.map(o =>
+        '<option value="'+o+'"'+(o===pinVal?' selected':'')+'>'
+        + (o==='random'?'🎲 Random':'📌 '+o.charAt(0).toUpperCase()+o.slice(1))
+        + '</option>').join('');
       const el = document.createElement('div');
-      el.className = 'lane' + (muted ? ' muted':'');
+      el.className = 'lane' + (paused ? ' paused':'');
       el.innerHTML =
         '<div class="lanehead">'
         +  '<strong>Lane '+L.lane
@@ -974,11 +1036,12 @@ function refresh(){
         +'</div>'
         +'<div class="title">'+(L.title||'—')+'</div>'
         +'<div class="url">'+urlHtml+'</div>'
-        +'<div class="elapsed">'+(muted?'muted':('▶ '+(L.elapsed||'')))+'</div>'
+        +'<div class="elapsed">'+(paused?'⏸ paused':('▶ '+(L.elapsed||'')))+'</div>'
         +'<div class="controls">'
         +  '<button class="primary" onclick="act(\\'/api/skip?lane='+L.lane+'\\')">Change Song ⏭</button>'
-        +  '<button class="'+(L.lane_muted?'on':'')+'" onclick="act(\\'/api/mute_toggle?lane='+L.lane+'\\')">'
-        +     (L.lane_muted?'Unmute':'Mute')+'</button>'
+        +  '<button class="'+(L.lane_paused?'on':'')+'" onclick="act(\\'/api/pause_toggle?lane='+L.lane+'\\')">'
+        +     (L.lane_paused?'▶ Resume':'⏸ Pause')+'</button>'
+        +  '<select onchange="setpin('+L.lane+',this.value)" title="Lock this lane to a source">'+opts+'</select>'
         +'</div>'
         +'<div class="vol">Vol'
         +  '<input type="range" min="0" max="100" value="'+L.volume+'" '
@@ -1039,7 +1102,7 @@ function refresh(){
     const root = document.getElementById('rows');
     root.innerHTML = '';
     s.lanes.forEach(L=>{
-      if (L.muted) return;                 // hide silenced lanes from the overlay
+      if (L.paused) return;                // hide paused (silent) lanes from the overlay
       const src = (L.source||'').toLowerCase();
       const el = document.createElement('div');
       el.className = 'row';
@@ -1101,17 +1164,20 @@ def make_control_handler(control: RadioControl):
                 control.skip(self._qs_int(qs, 'lane', 0))
             elif path == '/api/skip_all':
                 control.skip_all()
-            elif path == '/api/mute_toggle':
-                control.toggle_mute(self._qs_int(qs, 'lane', 0))
-            elif path == '/api/mute':
-                control.set_mute(self._qs_int(qs, 'lane', 0), True)
-            elif path == '/api/unmute':
-                control.set_mute(self._qs_int(qs, 'lane', 0), False)
-            elif path == '/api/global_mute_toggle':
-                control.toggle_global_mute()
+            elif path == '/api/pause_toggle':
+                control.toggle_pause(self._qs_int(qs, 'lane', 0))
+            elif path == '/api/pause':
+                control.set_pause(self._qs_int(qs, 'lane', 0), True)
+            elif path == '/api/resume':
+                control.set_pause(self._qs_int(qs, 'lane', 0), False)
+            elif path == '/api/global_pause_toggle':
+                control.toggle_global_pause()
             elif path == '/api/volume':
                 control.set_volume(self._qs_int(qs, 'lane', 0),
                                    self._qs_int(qs, 'v', 100))
+            elif path == '/api/pin':
+                control.set_pin(self._qs_int(qs, 'lane', 0),
+                                qs.get('source', [''])[0])
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1229,8 +1295,8 @@ def main():
             for lane in lanes:
                 print(f'  Lane {lane.lane_id + 1}: {lane.status}')
             print()
-            if control.global_muted:
-                print('  ⚠  ALL LANES MUTED')
+            if control.global_paused:
+                print('  ⏸  ALL LANES PAUSED')
             if httpd:
                 print(f'  Control panel : http://localhost:{port}/')
                 print(f'  OBS overlay   : http://localhost:{port}/obs')

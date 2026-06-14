@@ -124,13 +124,17 @@ http://localhost:8080/
 
 From the panel you can, per lane:
 
-- **Change Song ⏭** — skip the current track and jump to a new random one
-- **Mute / Unmute** — silence just that lane (it resumes with a fresh track when unmuted)
+- **Change Song ⏭** — skip the current track and jump to a new one
+- **Pause / Resume** — *true* pause: freezes the player so the **same song
+  continues from where it left off** when you resume (it does not start a new track)
+- **Source pin** — a dropdown to lock the lane to one source (YouTube / Archive /
+  Bandcamp / Alonetone) or set it back to 🎲 Random; takes effect immediately
 - **Volume** — set the lane level (applies to the next track that starts)
 
 …plus global controls in the top bar:
 
-- **Mute All** — instantly silence every lane (handy to drop the soundtrack on cue)
+- **Pause All** — instantly freeze every lane (handy to drop the soundtrack on cue);
+  **Resume All** continues every song exactly where it paused
 - **Skip All ⏭** — reroll every lane at once
 
 The status auto-refreshes every couple of seconds, so the panel always reflects

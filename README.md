@@ -177,12 +177,16 @@ failing to fetch the audio. The app now tells you why:
 
 Most common fixes, in order:
 
-1. `yt-dlp -U` — update yt-dlp. YouTube changes break extraction often; an
-   outdated yt-dlp is the #1 cause.
-2. `brew install deno` — recent yt-dlp uses it to solve YouTube's JS challenge.
-3. Put `youtube_cookies.txt` next to `radiot.py` (or it reads live cookies from
+1. Update yt-dlp. If it was installed with pip (common with Anaconda), run
+   `pip install -U yt-dlp` — `yt-dlp -U` fails on pip installs.
+2. The "n" signature challenge: yt-dlp needs its EJS solver script. The app
+   passes `--remote-components ejs:github` for you (see
+   `CONFIG['sources']['youtube']['remote_components']`). Without it the audio
+   URL is throttled and playback dies after a few seconds.
+3. `brew install deno` — the JavaScript runtime the solver uses.
+4. Put `youtube_cookies.txt` next to `radiot.py` (or it reads live cookies from
    Safari).
-4. In `CONFIG['sources']['youtube']`, change `'player_client'` to `'web'` or
+5. In `CONFIG['sources']['youtube']`, change `'player_client'` to `'web'` or
    `'ios,tv'` if the default stops working.
 
 ## Session Logs & Video Descriptions

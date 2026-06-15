@@ -113,6 +113,11 @@ CONFIG = {
             # yt-dlp player client(s). If YouTube stops playing, the startup
             # self-test will tell you; try 'web', 'ios', or 'ios,tv' here.
             'player_client': 'tv,web',
+            # Enables yt-dlp's EJS challenge solver download so the YouTube
+            # "n" signature challenge gets solved — WITHOUT this the audio URL
+            # is throttled and playback dies after a few seconds.
+            # 'ejs:github' (recommended) or 'ejs:npm'; '' to disable.
+            'remote_components': 'ejs:github',
         },
         'archive': {
             'enabled': True,
@@ -655,6 +660,9 @@ class SourceRouter:
             client = cfg.get('player_client', 'tv,web')
             if client:
                 cmd += ['--extractor-args', f'youtube:player_client={client}']
+            rc = cfg.get('remote_components', '')
+            if rc:
+                cmd += ['--remote-components', rc]
         cmd.append(url)
         return cmd
 
@@ -676,9 +684,12 @@ class SourceRouter:
         client = cfg.get('player_client', 'tv,web')
         if client:
             cmd += ['--extractor-args', f'youtube:player_client={client}']
+        rc = cfg.get('remote_components', '')
+        if rc:
+            cmd += ['--remote-components', rc]
         cmd.append(url)
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         except FileNotFoundError:
             return (False, 'yt-dlp not installed (brew install yt-dlp)')
         except Exception as e:
@@ -1376,10 +1387,11 @@ def main():
             print(f'  ✗  YouTube NOT playable — {msg}')
             note(f'⚠ YouTube self-test failed: {msg[:90]}')
             print('     Most common fixes:')
-            print('       1.  yt-dlp -U                 (update — fixes most breakage)')
-            print('       2.  brew install deno          (YouTube JS solver)')
-            print('       3.  put youtube_cookies.txt next to radiot.py')
-            print("       4.  edit CONFIG player_client → 'web' or 'ios,tv'")
+            print('       1.  pip install -U yt-dlp      (update; "yt-dlp -U" fails on pip installs)')
+            print('       2.  CONFIG remote_components = ejs:github  (solves the n-challenge)')
+            print('       3.  brew install deno          (JS runtime for the solver)')
+            print('       4.  put youtube_cookies.txt next to radiot.py')
+            print("       5.  edit CONFIG player_client to 'web' or 'ios,tv'")
 
     print()
     n = CONFIG['lanes']

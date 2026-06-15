@@ -27,6 +27,7 @@ import signal
 import os
 import re
 import csv
+import collections
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -43,6 +44,18 @@ from urllib.parse import urlparse, parse_qs
 # (youtube_videos.csv, youtube_cookies.txt) are found automatically —
 # no matter where you clone the repo. This is what makes it "just work."
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+# Recent runtime messages (errors, source failures) shown in the terminal
+# status panel and the web /api/status — so failures aren't invisible.
+RECENT_MSGS = collections.deque(maxlen=8)
+_recent_lock = threading.Lock()
+
+
+def note(msg: str):
+    line = f'{datetime.now():%H:%M:%S}  {msg}'
+    with _recent_lock:
+        RECENT_MSGS.append(line)
 
 
 def first_existing(paths: List[Path]) -> Optional[Path]:
@@ -95,6 +108,11 @@ CONFIG = {
                 SCRIPT_DIR.parent / 'youtube_cookies.txt',
                 Path.home() / 'ExternalRadio' / 'youtube_cookies.txt',
             ],
+            # Browser to pull live cookies from when no cookies.txt is found.
+            'cookies_browser': 'safari',
+            # yt-dlp player client(s). If YouTube stops playing, the startup
+            # self-test will tell you; try 'web', 'ios', or 'ios,tv' here.
+            'player_client': 'tv,web',
         },
         'archive': {
             'enabled': True,
@@ -630,11 +648,45 @@ class SourceRouter:
                 cmd += ['--cookies', str(cookies)]
             else:
                 # No cookies.txt found — read live cookies from Safari instead.
-                cmd += ['--cookies-from-browser', 'safari']
-            # TV client dodges YouTube's aggressive web-client bot detection.
-            cmd += ['--extractor-args', 'youtube:player_client=tv,web']
+                cmd += ['--cookies-from-browser',
+                        cfg.get('cookies_browser', 'safari')]
+            # Player client choice dodges YouTube's web-client bot detection.
+            # Configurable: if YouTube stops working, try 'web' or 'ios,tv'.
+            client = cfg.get('player_client', 'tv,web')
+            if client:
+                cmd += ['--extractor-args', f'youtube:player_client={client}']
         cmd.append(url)
         return cmd
+
+    def youtube_probe(self) -> Tuple[bool, str]:
+        """Try to resolve one real YouTube video so we can tell, at startup,
+        whether YouTube will actually play — and if not, exactly why."""
+        yt = self._yt
+        if not getattr(yt, '_catalog', None):
+            return (False, 'YouTube catalog empty (CSV not loaded)')
+        _, url = yt._catalog[0]
+        cfg = yt.cfg
+        cmd = ['yt-dlp', '-f', 'bestaudio/best', '--simulate',
+               '-O', '%(id)s', '--no-warnings', '--no-playlist']
+        cookies = first_existing(cfg.get('cookies_files', []))
+        if cookies:
+            cmd += ['--cookies', str(cookies)]
+        else:
+            cmd += ['--cookies-from-browser', cfg.get('cookies_browser', 'safari')]
+        client = cfg.get('player_client', 'tv,web')
+        if client:
+            cmd += ['--extractor-args', f'youtube:player_client={client}']
+        cmd.append(url)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        except FileNotFoundError:
+            return (False, 'yt-dlp not installed (brew install yt-dlp)')
+        except Exception as e:
+            return (False, f'probe error: {e}')
+        if r.returncode == 0 and r.stdout.strip():
+            return (True, f'resolved {r.stdout.strip().splitlines()[0]}')
+        errs = [l for l in r.stderr.splitlines() if l.strip()]
+        return (False, errs[-1].strip() if errs else f'yt-dlp exit {r.returncode}')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -768,6 +820,8 @@ class AudioLane:
         ffplay_base = ['ffplay'] + CONFIG['ffplay_opts'] + ['-af', af]
         suspended = False
         pause_started = 0.0
+        ytdlp = None                 # local handle so we can read its stderr
+        start = time.time()
         try:
             if source == 'archive':
                 cmd = ffplay_base + [url]
@@ -775,14 +829,16 @@ class AudioLane:
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 ytdlp_cmd = self.router.ytdlp_stream_cmd(source, url)
-                self._ytdlp = subprocess.Popen(
-                    ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                # Capture yt-dlp's stderr so we can report WHY it failed.
+                ytdlp = subprocess.Popen(
+                    ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self._ytdlp = ytdlp
                 self._proc = subprocess.Popen(
                     ffplay_base + ['-i', 'pipe:0'],
-                    stdin=self._ytdlp.stdout,
+                    stdin=ytdlp.stdout,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 # Let yt-dlp get SIGPIPE if ffplay exits first.
-                self._ytdlp.stdout.close()
+                ytdlp.stdout.close()
 
             # If we already started paused, freeze immediately.
             if self._is_paused():
@@ -812,7 +868,34 @@ class AudioLane:
         except Exception:
             pass
         finally:
+            played = time.time() - start - self._paused_accum
+            user_action = (self._skip.is_set() or self._is_paused()
+                           or not self._running)
             self._kill_proc()
+            # A track that "ends" almost immediately = the stream never played.
+            # Surface the real reason instead of silently spinning to the next.
+            if ytdlp is not None and played < 4.0 and not user_action:
+                err = b''
+                try:
+                    err = ytdlp.stderr.read() or b''
+                except Exception:
+                    pass
+                lines = [l for l in err.decode('utf-8', 'replace').splitlines()
+                         if l.strip()]
+                reason = lines[-1].strip() if lines else \
+                    f'no audio (yt-dlp exit {ytdlp.returncode})'
+                self.control.report_source_error(source, reason)
+                note(f'⚠ {source} failed: {reason[:90]}')
+                # Back off so a broken source can't spin every few seconds.
+                for _ in range(15):
+                    if not self._running or self._skip.is_set():
+                        break
+                    time.sleep(1)
+            elif ytdlp is not None:
+                try:
+                    ytdlp.stderr.read()        # drain to let it exit cleanly
+                except Exception:
+                    pass
 
     def stop(self):
         self._running = False
@@ -860,6 +943,12 @@ class RadioControl:
         self.global_paused = False
         self.log: Optional[SessionLog] = None
         self.started_at = datetime.now()
+        self.source_errors: Dict[str, str] = {}   # source -> last error reason
+        self._err_lock = threading.Lock()
+
+    def report_source_error(self, source: str, reason: str):
+        with self._err_lock:
+            self.source_errors[source] = reason
 
     def _lane(self, lane_num: int) -> Optional[AudioLane]:
         # lane_num is 1-based from the UI; lanes are stored 0-based.
@@ -913,11 +1002,17 @@ class RadioControl:
     def status(self) -> dict:
         secs = int((datetime.now() - self.started_at).total_seconds())
         uptime = f'{secs // 3600:02d}:{(secs % 3600) // 60:02d}:{secs % 60:02d}'
+        with _recent_lock:
+            messages = list(RECENT_MSGS)
+        with self._err_lock:
+            errors = dict(self.source_errors)
         return {
             'global_paused': self.global_paused,
             'uptime': uptime,
             'tracks_logged': len(self.log._entries) if self.log else 0,
             'lanes': [lane.info() for lane in self.lanes],
+            'messages': messages,
+            'source_errors': errors,
         }
 
 
@@ -978,6 +1073,11 @@ CONTROL_PAGE = """<!DOCTYPE html>
   .obs-link { font-size:12px; color:#8a8f9c; }
   .obs-link code { background:#202533; padding:2px 6px; border-radius:4px;
                    color:#9fd0ff; }
+  .logbox { margin:0 20px 24px; padding:12px 16px; background:#0b0c10;
+            border:1px solid #20242e; border-radius:10px; font-size:12px;
+            font-family:ui-monospace,Menlo,monospace; color:#8a8f9c;
+            white-space:pre-wrap; }
+  .logbox .err { color:#ff8585; font-weight:600; }
 </style>
 </head>
 <body>
@@ -993,6 +1093,7 @@ CONTROL_PAGE = """<!DOCTYPE html>
   <button onclick="act('/api/skip_all')">Skip All ⏭</button>
 </div>
 <main id="lanes"></main>
+<div class="logbox" id="log"></div>
 
 <script>
 const SOURCES = ['random','youtube','archive','bandcamp','alonetone'];
@@ -1050,6 +1151,17 @@ function refresh(){
         +'</div>';
       root.appendChild(el);
     });
+
+    // Recent runtime messages / source errors
+    const lg = document.getElementById('log');
+    const errs = Object.entries(s.source_errors || {});
+    let html = '';
+    if (errs.length){
+      html += errs.map(([k,v]) =>
+        '<div class="err">✗ '+k.toUpperCase()+': '+v+'</div>').join('');
+    }
+    (s.messages || []).slice(-6).forEach(m => { html += '<div>'+m+'</div>'; });
+    lg.innerHTML = html || '<div style="color:#5a6072">no messages</div>';
   }).catch(()=>{ document.getElementById('meta').textContent='disconnected'; });
 }
 refresh();
@@ -1250,9 +1362,24 @@ def main():
     # Wait a moment for background source loaders to start
     time.sleep(2)
 
-    # Shared control state (mute / skip / volume + status for the web UI)
+    # Shared control state (pause / skip / volume + status for the web UI)
     control = RadioControl()
     control.log = log
+
+    # YouTube self-test — tells you up front whether YouTube will play.
+    if CONFIG['sources']['youtube']['enabled']:
+        print('Testing YouTube playback...')
+        ok, msg = router.youtube_probe()
+        if ok:
+            print(f'  ✓  YouTube OK — {msg}')
+        else:
+            print(f'  ✗  YouTube NOT playable — {msg}')
+            note(f'⚠ YouTube self-test failed: {msg[:90]}')
+            print('     Most common fixes:')
+            print('       1.  yt-dlp -U                 (update — fixes most breakage)')
+            print('       2.  brew install deno          (YouTube JS solver)')
+            print('       3.  put youtube_cookies.txt next to radiot.py')
+            print("       4.  edit CONFIG player_client → 'web' or 'ios,tv'")
 
     print()
     n = CONFIG['lanes']
@@ -1302,6 +1429,12 @@ def main():
                 print(f'  OBS overlay   : http://localhost:{port}/obs')
             print(f'  Log: {log._path.name}')
             print(f'  Tracks logged: {len(log._entries)}')
+            with _recent_lock:
+                msgs = list(RECENT_MSGS)
+            if msgs:
+                print('  ── recent ──')
+                for m in msgs[-5:]:
+                    print(f'  {m}')
             time.sleep(5)
     except Exception:
         shutdown(None, None)

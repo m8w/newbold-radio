@@ -166,6 +166,25 @@ The overlay has a transparent background, so it composites cleanly over your
 video. Muted lanes are automatically hidden from the overlay. It refreshes
 every few seconds on its own — no need to reload the source.
 
+## Troubleshooting YouTube
+
+If YouTube tracks flash by every few seconds without playing, `yt-dlp` is
+failing to fetch the audio. The app now tells you why:
+
+- On startup it runs a **YouTube self-test** and prints the exact error.
+- Failing tracks no longer spin — the lane backs off and the reason appears in
+  the terminal "recent" panel and at the bottom of the control panel.
+
+Most common fixes, in order:
+
+1. `yt-dlp -U` — update yt-dlp. YouTube changes break extraction often; an
+   outdated yt-dlp is the #1 cause.
+2. `brew install deno` — recent yt-dlp uses it to solve YouTube's JS challenge.
+3. Put `youtube_cookies.txt` next to `radiot.py` (or it reads live cookies from
+   Safari).
+4. In `CONFIG['sources']['youtube']`, change `'player_client'` to `'web'` or
+   `'ios,tv'` if the default stops working.
+
 ## Session Logs & Video Descriptions
 
 Logs rotate every 12 hours into:

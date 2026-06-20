@@ -184,8 +184,11 @@ Most common fixes, in order:
    `CONFIG['sources']['youtube']['remote_components']`). Without it the audio
    URL is throttled and playback dies after a few seconds.
 3. `brew install deno` — the JavaScript runtime the solver uses.
-4. Put `youtube_cookies.txt` next to `radiot.py` (or it reads live cookies from
-   Safari).
+4. Public videos need no cookies. The app does **not** read browser cookies by
+   default (macOS blocks reading Safari's store — "Operation not permitted").
+   If a video is private/age-gated, drop a `youtube_cookies.txt` next to
+   `radiot.py`, or set `CONFIG['sources']['youtube']['cookies_browser']` to a
+   browser yt-dlp can read (e.g. `'chrome'`).
 5. In `CONFIG['sources']['youtube']`, change `'player_client'` to `'web'` or
    `'ios,tv'` if the default stops working.
 

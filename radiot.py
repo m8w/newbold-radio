@@ -109,7 +109,11 @@ CONFIG = {
                 Path.home() / 'ExternalRadio' / 'youtube_cookies.txt',
             ],
             # Browser to pull live cookies from when no cookies.txt is found.
-            'cookies_browser': 'safari',
+            # Empty by default: reading Safari's cookie store is blocked by
+            # macOS ("Operation not permitted") and public videos need no
+            # cookies anyway. Set to 'chrome'/'safari'/etc. only if you must,
+            # or just drop a youtube_cookies.txt next to radiot.py.
+            'cookies_browser': '',
             # yt-dlp player client(s). If YouTube stops playing, the startup
             # self-test will tell you; try 'web', 'ios', or 'ios,tv' here.
             'player_client': 'tv,web',
@@ -649,12 +653,12 @@ class SourceRouter:
         if source == 'youtube':
             cfg = self._yt.cfg
             cookies = first_existing(cfg.get('cookies_files', []))
+            browser = cfg.get('cookies_browser', '')
             if cookies:
                 cmd += ['--cookies', str(cookies)]
-            else:
-                # No cookies.txt found — read live cookies from Safari instead.
-                cmd += ['--cookies-from-browser',
-                        cfg.get('cookies_browser', 'safari')]
+            elif browser:
+                cmd += ['--cookies-from-browser', browser]
+            # else: no cookies — public videos play fine without them.
             # Player client choice dodges YouTube's web-client bot detection.
             # Configurable: if YouTube stops working, try 'web' or 'ios,tv'.
             client = cfg.get('player_client', 'tv,web')
@@ -677,10 +681,11 @@ class SourceRouter:
         cmd = ['yt-dlp', '-f', 'bestaudio/best', '--simulate',
                '-O', '%(id)s', '--no-warnings', '--no-playlist']
         cookies = first_existing(cfg.get('cookies_files', []))
+        browser = cfg.get('cookies_browser', '')
         if cookies:
             cmd += ['--cookies', str(cookies)]
-        else:
-            cmd += ['--cookies-from-browser', cfg.get('cookies_browser', 'safari')]
+        elif browser:
+            cmd += ['--cookies-from-browser', browser]
         client = cfg.get('player_client', 'tv,web')
         if client:
             cmd += ['--extractor-args', f'youtube:player_client={client}']

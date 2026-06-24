@@ -1193,59 +1193,49 @@ OBS_PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Now Playing</title>
 <style>
-  /* Transparent background so it composites cleanly over video in OBS. */
-  html,body { margin:0; background:transparent; }
-  body { font-family:-apple-system,Segoe UI,Roboto,Helvetica,sans-serif;
-         color:#fff; padding:18px; }
-  .wrap { display:inline-block; background:rgba(8,9,13,0.62);
-          backdrop-filter:blur(4px); border-radius:14px; padding:16px 20px;
-          max-width:720px; }
-  .head { font-size:13px; letter-spacing:2px; text-transform:uppercase;
-          color:#9fd0ff; margin-bottom:10px; font-weight:700; }
-  .row { display:flex; align-items:baseline; gap:10px; padding:5px 0;
-         border-top:1px solid rgba(255,255,255,.08); }
-  .row:first-of-type { border-top:none; }
-  .tag { font-size:11px; font-weight:700; letter-spacing:.5px; padding:2px 7px;
-         border-radius:5px; background:rgba(255,255,255,.14);
-         white-space:nowrap; }
-  .tag.youtube{background:rgba(255,80,80,.30)}
-  .tag.archive{background:rgba(90,166,255,.30)}
-  .tag.bandcamp{background:rgba(63,208,216,.28)}
-  .tag.alonetone{background:rgba(183,139,255,.30)}
-  .info { display:flex; flex-direction:column; }
-  .t { font-size:16px; font-weight:600; text-shadow:0 1px 3px rgba(0,0,0,.7); }
-  .u { font-size:12px; color:#bcd6ff; text-shadow:0 1px 3px rgba(0,0,0,.7);
-       overflow-wrap:anywhere; }
-  .row.muted { opacity:.4; }
+  /* SUBTRACT-BLEND DESIGN
+     Solid BLACK background + WHITE text. In OBS, right-click this Browser
+     source -> Blending Mode -> Subtract. Black background subtracts nothing
+     (your visuals show through); white letters subtract to black, so the
+     text reads as clean black type over the video with no box.
+     Adjust --size to scale all text at once. */
+  :root { --size: 26px; }
+  html,body { margin:0; background:#000000; }
+  body { font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         color:#ffffff; padding:24px; font-size:var(--size);
+         line-height:1.25; font-weight:700; }
+  .song { margin:0 0 22px 0; }
+  .l1 { font-size:1em; }
+  .l2 { font-size:0.66em; font-weight:600; }
+  .l3 { font-size:0.56em; font-weight:500; overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="head">♫ ExternalRadio — Now Playing</div>
-  <div id="rows"></div>
-</div>
+<div id="rows"></div>
 <script>
 function refresh(){
   fetch('/api/status').then(r=>r.json()).then(s=>{
     const root = document.getElementById('rows');
     root.innerHTML = '';
+    let n = 0;
     s.lanes.forEach(L=>{
-      if (L.paused) return;                // hide paused (silent) lanes from the overlay
-      const src = (L.source||'').toLowerCase();
+      if (L.paused || !L.url) return;        // only currently-playing songs
+      n++;
+      const pos = L.elapsed ? ('position ' + L.elapsed) : '';
+      const srcTxt = L.source ? L.source.toUpperCase() : '';
+      const line2 = [pos, srcTxt].filter(Boolean).join('     ');
       const el = document.createElement('div');
-      el.className = 'row';
+      el.className = 'song';
       el.innerHTML =
-        '<span class="tag '+src+'">'+(L.source||'—').toUpperCase()+'</span>'
-        +'<div class="info">'
-        +  '<span class="t">'+(L.title||'—')+'</span>'
-        +  '<span class="u">'+(L.url||'')+'</span>'
-        +'</div>';
+        '<div class="l1">' + n + ' playing song: ' + (L.title || '') + '</div>'
+        + (line2 ? '<div class="l2">' + line2 + '</div>' : '')
+        + '<div class="l3">' + L.url + '</div>';
       root.appendChild(el);
     });
   }).catch(()=>{});
 }
 refresh();
-setInterval(refresh, 3000);
+setInterval(refresh, 2000);
 </script>
 </body>
 </html>"""

@@ -146,9 +146,14 @@ what's actually playing.
 
 ## OBS "Now Playing" Overlay
 
-Add a live on-screen tracklist to your broadcast — it lists each lane's song
-title, its source (YouTube / Archive / Bandcamp / Alonetone), and the URL where
-the track lives on the internet.
+Add a live on-screen tracklist to your broadcast. Each currently-playing song
+shows on three lines:
+
+```
+1 playing song: <Song — Album>
+position <MM:SS>     <SOURCE>
+<complete url>
+```
 
 In OBS:
 
@@ -159,12 +164,19 @@ In OBS:
    http://localhost:8080/obs
    ```
 
-3. Set the width/height to taste (e.g. 760 × 400) and check **"Shutdown source
-   when not visible"** if you like.
+3. Set the width/height to taste (e.g. 900 × 500).
 
-The overlay has a transparent background, so it composites cleanly over your
-video. Muted lanes are automatically hidden from the overlay. It refreshes
-every few seconds on its own — no need to reload the source.
+### Subtract blend mode (black text, no box)
+
+The overlay is **white text on a solid black background** by design. Right-click
+the Browser source → **Blending Mode → Subtract**. The black background subtracts
+nothing, so your visuals show through; the white letters subtract to black, so the
+text reads as clean **black type floating over the video with no background box**.
+
+To scale all the text at once, edit `--size` in the `OBS_PAGE` style block near
+the top of `radiot.py` (default `26px`). Only currently-playing songs are listed;
+paused lanes drop off automatically. It refreshes every couple of seconds on its
+own — no need to reload the source.
 
 ## Troubleshooting YouTube
 

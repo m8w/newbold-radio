@@ -16,7 +16,7 @@ Built for and by [William Victor Newbold](https://xik6.bandcamp.com/) as part of
   - Archive.org (weight 20) — streaming via public API
   - Bandcamp (weight 13) — two-level `yt-dlp` crawl for individual track URLs
   - Alonetone (weight 5) — filtered to owner-only tracks at `cdn.alonetone.com`
-- **EBU R128 loudness normalization** — all lanes balanced at –16 LUFS via ffmpeg `loudnorm`
+- **Loudness leveling / equalization** — every track runs through an ffmpeg filter chain (`dynaudnorm` + limiter by default) so disparate sources sit at a consistent level; fully configurable, including tone EQ
 - **Lane watchdog** — auto-restarts any lane that dies, preventing silence
 - **12-hour log rotation** — session logs rotate every 12 hours without interrupting playback
 - **Video description output** — each log block ends with a `VIDEO DESCRIPTION BLOCK` ready to paste into Bandcamp or YouTube uploads
@@ -177,6 +177,33 @@ To scale all the text at once, edit `--size` in the `OBS_PAGE` style block near
 the top of `radiot.py` (default `26px`). Only currently-playing songs are listed;
 paused lanes drop off automatically. It refreshes every couple of seconds on its
 own — no need to reload the source.
+
+## Audio Leveling & Equalization
+
+Every track is processed through one ffmpeg `-af` chain so a quiet Archive tape
+and a hot YouTube upload play at a comparable level. Edit
+`CONFIG['audio_filters']` near the top of `radiot.py`:
+
+```python
+'audio_filters':
+    'highpass=f=30, dynaudnorm=f=250:g=15:p=0.9:m=10, alimiter=limit=0.95',
+```
+
+- `dynaudnorm` — real-time loudness leveling (raises quiet tracks, tames loud
+  ones); smooth and well-suited to a continuous live mix.
+- `alimiter` — brick-wall limiter to prevent clipping.
+- `highpass=f=30` — trims sub-rumble.
+
+Tweaks:
+
+- **More aggressive leveling:** raise `dynaudnorm` `g` (e.g. `g=21`).
+- **Broadcast EBU R128 instead:** `'loudnorm=I=-16:TP=-1.5:LRA=11'` (more
+  accurate target, slightly more latency).
+- **Tone EQ (bass/treble):** add `equalizer` bands, e.g.
+  `'... , equalizer=f=80:t=q:w=1:g=4, equalizer=f=3000:t=q:w=1:g=-2'`
+  (boost ~80 Hz +4 dB, cut ~3 kHz −2 dB).
+
+Per-lane volume from the control panel is applied after this chain.
 
 ## Troubleshooting YouTube
 

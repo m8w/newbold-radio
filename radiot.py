@@ -148,6 +148,22 @@ CONFIG = {
     'ffplay_opts': [
         '-nodisp', '-autoexit', '-loglevel', 'quiet',
     ],
+
+    # ── AUDIO PROCESSING (the "equalization" chain) ─────────────────────────
+    # An ffmpeg -af filter chain applied to EVERY track so wildly different
+    # sources (YouTube / Archive / Bandcamp) sit at a consistent level.
+    #   • dynaudnorm  — real-time loudness leveling (smooth; great for a live
+    #                   continuous mix — quiet tracks come up, loud ones come down)
+    #   • alimiter    — brick-wall limiter to stop clipping/peaks
+    # Per-lane volume is appended automatically after this chain.
+    #
+    # Tone EQ (bass/treble) — add bands to taste, e.g.:
+    #   'equalizer=f=80:t=q:w=1:g=4, equalizer=f=3000:t=q:w=1:g=-2'
+    # Broadcast EBU R128 alternative (more accurate, slightly more latency):
+    #   'loudnorm=I=-16:TP=-1.5:LRA=11'
+    'audio_filters':
+        'highpass=f=30, dynaudnorm=f=250:g=15:p=0.9:m=10, alimiter=limit=0.95',
+
     'ytdlp_opts': [
         '--no-warnings',
         '--quiet',
@@ -832,7 +848,14 @@ class AudioLane:
         Pause is real: we SIGSTOP the player to freeze it in place and SIGCONT
         to resume the same song — no new track, no lost position.
         """
-        af = f'volume={self.volume / 100:.2f}'
+        # Build the audio filter chain: equalization/leveling first, then the
+        # per-lane volume. Keeps every source at a consistent loudness.
+        chain = []
+        base = CONFIG.get('audio_filters', '').strip()
+        if base:
+            chain.append(base)
+        chain.append(f'volume={self.volume / 100:.2f}')
+        af = ','.join(chain)
         ffplay_base = ['ffplay'] + CONFIG['ffplay_opts'] + ['-af', af]
         suspended = False
         pause_started = 0.0

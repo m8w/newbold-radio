@@ -140,9 +140,24 @@ From the panel you can, per lane:
 The status auto-refreshes every couple of seconds, so the panel always reflects
 what's actually playing.
 
+### Control it from your phone
+
+The server listens on your whole network, and the panel is touch-friendly. On a
+phone (or tablet) on the **same Wi-Fi**, open the address the app prints at
+startup:
+
+```
+📱  On your phone (same Wi-Fi): http://192.168.x.x:8080/
+```
+
+That same `http://<mac-ip>:8080/` line also shows in the live status display.
+Mute, skip, change source, and ride the volume sliders from the couch while the
+audio plays on the Mac mini. (Tip: add it to your phone's Home Screen for a
+one-tap "remote.")
+
 > The port is configurable via `CONFIG['control_port']` near the top of
-> `radiot.py` (default `8080`). The server binds to `0.0.0.0`, so you can
-> also reach it from another device on your LAN at `http://<this-mac-ip>:8080/`.
+> `radiot.py` (default `8080`). The server binds to `0.0.0.0` for LAN access; it
+> has no password, so use it on a trusted home network.
 
 ## OBS "Now Playing" Overlay
 

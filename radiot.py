@@ -1108,10 +1108,20 @@ CONTROL_PAGE = """<!DOCTYPE html>
   button.on { background:#6b2f3d; border-color:#8a3d4f; }
   .vol { display:flex; align-items:center; gap:8px; margin-top:10px;
          font-size:12px; color:#8a8f9c; }
-  input[type=range]{ flex:1; accent-color:#5aa6ff; }
+  input[type=range]{ flex:1; accent-color:#5aa6ff; height:28px; }
   .obs-link { font-size:12px; color:#8a8f9c; }
   .obs-link code { background:#202533; padding:2px 6px; border-radius:4px;
                    color:#9fd0ff; }
+  /* Phone-friendly: bigger tap targets, single column, no zoom-on-focus. */
+  @media (max-width: 640px) {
+    main { grid-template-columns:1fr; padding:12px; gap:12px; }
+    h1 { font-size:20px; }
+    button { padding:13px 16px; font-size:16px; flex:1 1 auto; }
+    select { padding:12px; font-size:16px; width:100%; }
+    .bar button { flex:1 1 45%; }
+    .title { font-size:17px; }
+    input[type=range]{ height:40px; }
+  }
   .logbox { margin:0 20px 24px; padding:12px 16px; background:#0b0c10;
             border:1px solid #20242e; border-radius:10px; font-size:12px;
             font-family:ui-monospace,Menlo,monospace; color:#8a8f9c;
@@ -1334,6 +1344,21 @@ def make_control_handler(control: RadioControl):
     return ControlHandler
 
 
+def get_lan_ip() -> Optional[str]:
+    """Best-effort local network IP so you can reach the panel from a phone."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Doesn't actually send anything; just picks the outbound interface.
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        return ip if not ip.startswith('127.') else None
+    except Exception:
+        return None
+    finally:
+        s.close()
+
+
 def start_control_server(control: RadioControl, port: int):
     """Launch the control/OBS web server in a background daemon thread."""
     try:
@@ -1425,10 +1450,13 @@ def main():
     # ── Control panel + OBS overlay web server ──────────────────────────────
     port = CONFIG.get('control_port', 8080)
     httpd = start_control_server(control, port)
+    lan_ip = get_lan_ip()
     if httpd:
         print(f'  ✓  Control panel : http://localhost:{port}/')
         print(f'  ✓  OBS overlay   : http://localhost:{port}/obs  '
               f'(add as a Browser Source)')
+        if lan_ip:
+            print(f'  📱  On your phone (same Wi-Fi): http://{lan_ip}:{port}/')
 
     def shutdown(sig, frame):
         print('\n\nShutting down...')
@@ -1457,6 +1485,8 @@ def main():
             if httpd:
                 print(f'  Control panel : http://localhost:{port}/')
                 print(f'  OBS overlay   : http://localhost:{port}/obs')
+                if lan_ip:
+                    print(f'  Phone (Wi-Fi) : http://{lan_ip}:{port}/')
             print(f'  Log: {log._path.name}')
             print(f'  Tracks logged: {len(log._entries)}')
             with _recent_lock:

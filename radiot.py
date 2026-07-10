@@ -316,18 +316,38 @@ class SessionLog:
     def __init__(self, log_dir: Path, rotate_hours: float = 12):
         self.log_dir = log_dir
         self.rotate_hours = rotate_hours
-        self.log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._disabled = False          # set True if the disk can't be written
+        self._entries: List[str] = []
+        self._block_start = datetime.now()
+        self._path = log_dir / 'block_startup.txt'
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._fail(e)
         self._start_new_block()
+
+    def _fail(self, e: Exception):
+        """Disk write failed (e.g. No space left) — keep the music going."""
+        if not self._disabled:
+            self._disabled = True
+            msg = f'logging disabled — {e.__class__.__name__}: {e}'
+            print(f'  ⚠  {msg}')
+            note(f'⚠ {msg}')
 
     def _start_new_block(self):
         self._block_start = datetime.now()
         ts = self._block_start.strftime('%Y%m%d_%H%M%S')
         self._path = self.log_dir / f'block_{ts}.txt'
-        self._entries: List[str] = []
-        with open(self._path, 'w') as f:
-            f.write(f'ExternalRadio session — {self._block_start.strftime("%Y-%m-%d %H:%M")}\n')
-            f.write('=' * 60 + '\n\n')
+        self._entries = []
+        if self._disabled:
+            return
+        try:
+            with open(self._path, 'w') as f:
+                f.write(f'ExternalRadio session — {self._block_start.strftime("%Y-%m-%d %H:%M")}\n')
+                f.write('=' * 60 + '\n\n')
+        except OSError as e:
+            self._fail(e)
 
     def log(self, source: str, title: str, url: str):
         now = datetime.now()
@@ -339,16 +359,31 @@ class SessionLog:
         entry = f'[{now.strftime("%H:%M:%S")}] [{source.upper()}] {title}\n  {url}\n'
         with self._lock:
             self._entries.append(entry)
-            with open(self._path, 'a') as f:
-                f.write(entry)
+            if len(self._entries) > 5000:      # cap in-memory list
+                self._entries.pop(0)
+            if self._disabled:
+                return
+            try:
+                with open(self._path, 'a') as f:
+                    f.write(entry)
+            except OSError as e:
+                self._fail(e)
 
     def _finalize_block(self):
-        with open(self._path, 'a') as f:
-            f.write(f'\n\n— end of block ({len(self._entries)} tracks) —\n')
+        if self._disabled:
+            return
+        try:
+            with open(self._path, 'a') as f:
+                f.write(f'\n\n— end of block ({len(self._entries)} tracks) —\n')
+        except OSError as e:
+            self._fail(e)
 
     def finalize(self):
         self._finalize_block()
-        print(f'\n  Log saved: {self._path}')
+        if self._disabled:
+            print('\n  Log not saved (disk write was disabled).')
+        else:
+            print(f'\n  Log saved: {self._path}')
 
 
 # ══════════════════════════════════════════════════════════════════════════════

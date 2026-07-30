@@ -1401,8 +1401,11 @@ def start_control_server(control: RadioControl, port: int):
         handler = make_control_handler(control)
         httpd = ThreadingHTTPServer(('0.0.0.0', port), handler)
     except OSError as e:
-        print(f'  ✗  Control server could not bind to port {port}: {e}')
-        print(f'     (change CONFIG["control_port"] if the port is in use)')
+        print(f'  ✗  Control panel could NOT start on port {port}: {e}')
+        print(f'     → Another radiot.py is probably already running. Quit it')
+        print(f'       first (Ctrl+C in its window), then start this one again.')
+        print(f'       To find/stop a stray one:  lsof -ti tcp:{port} | xargs kill')
+        print(f'       Or change CONFIG["control_port"] to use a different port.')
         return None
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()

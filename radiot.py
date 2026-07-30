@@ -108,12 +108,13 @@ CONFIG = {
                 SCRIPT_DIR.parent / 'youtube_cookies.txt',
                 Path.home() / 'ExternalRadio' / 'youtube_cookies.txt',
             ],
-            # Browser to pull live cookies from when no cookies.txt is found.
-            # Empty by default: reading Safari's cookie store is blocked by
-            # macOS ("Operation not permitted") and public videos need no
-            # cookies anyway. Set to 'chrome'/'safari'/etc. only if you must,
-            # or just drop a youtube_cookies.txt next to radiot.py.
-            'cookies_browser': '',
+            # Browser to read cookies from when no cookies.txt file is present.
+            # YouTube throws "Sign in to confirm you're not a bot" once your IP
+            # is flagged; cookies fix it. macOS BLOCKS reading Safari's store
+            # ("Operation not permitted"), but Chrome/Brave/Firefox work.
+            # Set '' to send no cookies. A youtube_cookies.txt file (dropped
+            # next to radiot.py) always takes priority over this.
+            'cookies_browser': 'chrome',
             # yt-dlp player client(s). If YouTube stops playing, the startup
             # self-test will tell you; try 'web', 'ios', or 'ios,tv' here.
             'player_client': 'tv,web',
@@ -1464,12 +1465,19 @@ def main():
         else:
             print(f'  ✗  YouTube NOT playable — {msg}')
             note(f'⚠ YouTube self-test failed: {msg[:90]}')
-            print('     Most common fixes:')
-            print('       1.  pip install -U yt-dlp      (update; "yt-dlp -U" fails on pip installs)')
-            print('       2.  CONFIG remote_components = ejs:github  (solves the n-challenge)')
-            print('       3.  brew install deno          (JS runtime for the solver)')
-            print('       4.  put youtube_cookies.txt next to radiot.py')
-            print("       5.  edit CONFIG player_client to 'web' or 'ios,tv'")
+            if 'not a bot' in msg.lower() or 'sign in' in msg.lower():
+                print('     YouTube flagged this IP — it needs cookies:')
+                print('       1.  make sure Chrome is signed in to YouTube, then')
+                print("           set CONFIG cookies_browser = 'chrome'  (default)")
+                print('       2.  OR export youtube_cookies.txt next to radiot.py')
+                print('           (browser extension: "Get cookies.txt LOCALLY")')
+            else:
+                print('     Most common fixes:')
+                print('       1.  pip install -U yt-dlp      (update; "yt-dlp -U" fails on pip installs)')
+                print('       2.  CONFIG remote_components = ejs:github  (solves the n-challenge)')
+                print('       3.  brew install deno          (JS runtime for the solver)')
+                print('       4.  put youtube_cookies.txt next to radiot.py')
+                print("       5.  edit CONFIG player_client to 'web' or 'ios,tv'")
 
     print()
     n = CONFIG['lanes']
